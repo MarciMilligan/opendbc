@@ -25,6 +25,16 @@ If we instead used a less restrictive model as our baseline, any naturally more 
 
 ## Implementation Details
 
+### Upstream Compatibility
+
+`HyundaiFlags.CANFD_ANGLE_STEERING` retains bit 27; `HAS_BSM` uses bit 28
+so blind-spot detection cannot enable angle steering. These are car flags, not
+the separate `HyundaiSafetyFlags` bit assignments.
+
+The Python vehicle model uses mass-normalized inertia and tire stiffness.
+Mass cancels out of the bicycle-model equations, so this representation preserves
+the angle limits and slip factors used by the per-vehicle panda safety models.
+
 ### Two-Layer Validation Process
 
 We use a two-layer validation approach to balance vehicle-specific optimization with baseline safety:

@@ -28,6 +28,7 @@ NO_DATES_PLATFORMS = {
   CAR.HYUNDAI_ELANTRA,
   CAR.HYUNDAI_ELANTRA_GT_I30,
   CAR.KIA_CEED,
+  CAR.KIA_CEED_PHEV,
   CAR.KIA_FORTE,
   CAR.KIA_OPTIMA_G4,
   CAR.KIA_OPTIMA_G4_FL,
@@ -54,6 +55,41 @@ def cars_with(flags):
 
 
 class TestHyundaiFingerprint(unittest.TestCase):
+  def test_bsm_and_angle_steering_detection(self):
+    for car_model in CAR:
+      angle_steering = bool(car_model.config.flags & HyundaiFlags.CANFD_ANGLE_STEERING)
+      for bsm in (False, True):
+        with self.subTest(car_model=car_model, bsm=bsm):
+          fingerprint = gen_empty_fingerprint()
+          if bsm:
+            if car_model.config.flags & HyundaiFlags.CANFD:
+              fingerprint[CanBus(None, fingerprint).ECAN][0x1ba] = 32
+            else:
+              fingerprint[0][0x58b] = 8
+          CP = CarInterface.get_params(car_model, fingerprint, [], False, False, False)
+          self.assertEqual(bool(CP.flags & HyundaiFlags.HAS_BSM), bsm)
+          self.assertEqual(bool(CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING), angle_steering)
+          self.assertEqual(CP.steerControlType == CarParams.SteerControlType.angle, angle_steering)
+          if car_model.config.flags & HyundaiFlags.CANFD:
+            self.assertEqual(bool(CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CANFD_ANGLE_STEERING), angle_steering)
+
+  def test_angle_steering_lka_longitudinal_unavailable(self):
+    for car_model in cars_with(HyundaiFlags.CANFD_ANGLE_STEERING):
+      for bsm in (False, True):
+        with self.subTest(car_model=car_model, bsm=bsm):
+          fingerprint = gen_empty_fingerprint()
+          fingerprint[CanBus(None, fingerprint).CAM][0x110] = 32
+          CAN = CanBus(None, fingerprint, lka_steering=True)
+          if bsm:
+            fingerprint[CAN.ECAN][0x1ba] = 32
+          car_fw = [CarParams.CarFw(ecu=Ecu.adas)]
+          CP = CarInterface.get_params(car_model, fingerprint, car_fw, True, False, False)
+          self.assertFalse(CP.alphaLongitudinalAvailable)
+          self.assertFalse(CP.openpilotLongitudinalControl)
+          self.assertTrue(CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG)
+          self.assertEqual(CP.steerControlType, CarParams.SteerControlType.angle)
+          self.assertEqual(bool(CP.flags & HyundaiFlags.HAS_BSM), bsm)
+
   def test_feature_detection(self):
     # LKA steering
     for lka_steering in (True, False):
