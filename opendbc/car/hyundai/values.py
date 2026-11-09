@@ -170,9 +170,9 @@ class HyundaiFlags(IntFlag):
 
   ALT_LIMITS_2 = 2 ** 26
 
-  CANFD_ANGLE_STEERING = 2 ** 27
+  HAS_BSM = 2 ** 27  # blind spot monitoring
 
-  HAS_BSM = 2 ** 28  # bit 27 is reserved for angle steering
+  CANFD_ANGLE_STEERING = 2 ** 28
 
 
 @dataclass
@@ -793,6 +793,10 @@ class CAR(Platforms):
     GENESIS_G70_2020.specs,
     flags=HyundaiFlags.CHECKSUM_CRC8,
     sp_flags=HyundaiFlagsSP.NON_SCC_RADAR_FCA,
+  )
+  HYUNDAI_SONATA_HEV_2024 = HyundaiCanFDPlatformConfig(
+    [HyundaiCarDocs("Hyundai Sonata Hybrid (without HDA II) 2024-26", car_parts=CarParts.common([CarHarness.hyundai_a]))],
+    CarSpecs(wheelbase=2.84, steerRatio=13.27),
   )
 
 

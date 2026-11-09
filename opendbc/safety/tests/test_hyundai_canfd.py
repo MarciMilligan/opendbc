@@ -5,11 +5,13 @@ import numpy as np
 
 from opendbc.car.hyundai.carcontroller import ANGLE_SAFETY_BASELINE_MODEL
 from opendbc.car.hyundai.values import HyundaiSafetyFlags, CAR, HyundaiFlags, CarControllerParams
+from opendbc.sunnypilot.car.hyundai.values import HyundaiSafetyFlagsSP
 from opendbc.sunnypilot.car.hyundai.values import ANGLE_STEERING_MODEL_BY_CAR, encode_angle_model_id
 from opendbc.car.structs import CarParams
 from opendbc.car.vehicle_model import VehicleModel, calc_slip_factor
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import away_round, round_speed
+from opendbc.safety.tests.libsafety import libsafety_py
 from opendbc.safety.tests.hyundai_common import HyundaiButtonBase, HyundaiLongitudinalBase
 from opendbc.car.lateral import get_max_angle_delta_vm, get_max_angle_vm, AngleSteeringLimitsVM
 from opendbc.car.hyundai.interface import CarInterface
@@ -33,7 +35,7 @@ def round_angle(angle_deg: float, can_offset=0):
   return int(scaled) * 0.1
 
 
-class TestHyundaiCanfdBase(HyundaiButtonBase, common.CarSafetyTest):
+class TestHyundaiCanfdBase(HyundaiButtonBase, common.CarSafetyTest, common.DriverTorqueSteeringSafetyTest, common.SteerRequestCutSafetyTest):
 
   DBC = "hyundai_canfd_generated"
   SAFETY_MODEL = CarParams.SafetyModel.hyundaiCanfd
@@ -41,6 +43,19 @@ class TestHyundaiCanfdBase(HyundaiButtonBase, common.CarSafetyTest):
   TX_MSGS = [[0x50, 0], [0x1CF, 1], [0x2A4, 0]]
   STANDSTILL_THRESHOLD = 0.375 * 0.03125  # 0.375 kph
   FWD_BLACKLISTED_ADDRS = {2: [0x50, 0x2a4]}
+
+  MAX_RATE_UP = 2
+  MAX_RATE_DOWN = 3
+  MAX_TORQUE_LOOKUP = [0], [270]
+
+  MAX_RT_DELTA = 112
+
+  DRIVER_TORQUE_ALLOWANCE = 250
+  DRIVER_TORQUE_FACTOR = 2
+
+  # Safety around steering req bit
+  MIN_VALID_STEERING_FRAMES = 89
+  MAX_INVALID_STEERING_FRAMES = 2
 
   PT_BUS = 0
   SCC_BUS = 2
@@ -96,32 +111,18 @@ class TestHyundaiCanfdBase(HyundaiButtonBase, common.CarSafetyTest):
 
 class TestHyundaiCanfdTorqueSteering(TestHyundaiCanfdBase, common.DriverTorqueSteeringSafetyTest, common.SteerRequestCutSafetyTest):
 
-  MAX_RATE_UP = 2
-  MAX_RATE_DOWN = 3
-  MAX_TORQUE_LOOKUP = [0], [270]
-
-  MAX_RT_DELTA = 112
-  RT_INTERVAL = 250000
-
-  DRIVER_TORQUE_ALLOWANCE = 250
-  DRIVER_TORQUE_FACTOR = 2
-
-  # Safety around steering req bit
-  MIN_VALID_STEERING_FRAMES = 89
-  MAX_INVALID_STEERING_FRAMES = 2
-  MIN_VALID_STEERING_RT_INTERVAL = 810000  # a ~10% buffer, can send steer up to 110Hz
-
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
     if cls.__name__ == "TestHyundaiCanfdTorqueSteering":
       cls.packer = None
-      cls.safety = None
       raise unittest.SkipTest
 
 
 class TestHyundaiCanfdAngleSteering(TestHyundaiCanfdBase, common.AngleSteeringSafetyTest):
+
   SAFETY_PARAM = HyundaiSafetyFlags.CANFD_ANGLE_STEERING
+
   PLATFORMS = {str(platform): platform for platform in CAR if
                platform.config.flags & HyundaiFlags.CANFD_ANGLE_STEERING and not CarInterface.get_non_essential_params(str(platform)).dashcamOnly}
 
@@ -175,7 +176,6 @@ class TestHyundaiCanfdAngleSteering(TestHyundaiCanfdBase, common.AngleSteeringSa
     super().setUpClass()
     if cls.__name__ == "TestHyundaiCanfdAngleSteering":
       cls.packer = None
-      cls.safety = None
       raise unittest.SkipTest
 
   def get_vm(self, car_name):
@@ -185,12 +185,8 @@ class TestHyundaiCanfdAngleSteering(TestHyundaiCanfdBase, common.AngleSteeringSa
     # We properly test lateral acceleration and jerk below
     pass
 
-  @parameterized("car_name", sorted(PLATFORMS))
-  def test_lateral_accel_limit(self, car_name):
-    angle_model_id = ANGLE_STEERING_MODEL_BY_CAR.get(car_name, 0)
-    self.safety.set_current_safety_param_sp(encode_angle_model_id(angle_model_id))
-    self._reset_safety_hooks()
-
+  def test_lateral_accel_limit(self):
+    car_name = ANGLE_SAFETY_BASELINE_MODEL
     for speed in np.linspace(0, 40, 100):
       speed = round_speed(away_round(speed / 0.03125 * 3.6) * 0.03125 / 3.6)
       speed = max(speed, 1)
@@ -511,6 +507,8 @@ class TestHyundaiCanfdLKASteeringAltEVTorque(TestHyundaiCanfdLKASteeringAltEVBas
 
 class TestHyundaiCanfdLKASteeringAltAngle(TestHyundaiCanfdAngleSteering):
 
+  SAFETY_PARAM = HyundaiSafetyFlags.CANFD_LKA_STEER_MSG | HyundaiSafetyFlags.CANFD_LKA_STEER_MSG_ALT | HyundaiSafetyFlags.CANFD_ANGLE_STEERING
+
   TX_MSGS = [[0x110, 0], [0x1CF, 1], [0x362, 0]]
   RELAY_MALFUNCTION_ADDRS = {0: (0x110, 0x362)}
   FWD_BLACKLISTED_ADDRS = {2: [0x110, 0x362]}
@@ -519,8 +517,6 @@ class TestHyundaiCanfdLKASteeringAltAngle(TestHyundaiCanfdAngleSteering):
   SCC_BUS = 1
   STEER_MSG = "LKAS_ALT"
   GAS_MSG = ("ACCELERATOR_BRAKE_ALT", "ACCELERATOR_PEDAL_PRESSED")
-
-  SAFETY_PARAM = HyundaiSafetyFlags.CANFD_LKA_STEER_MSG | HyundaiSafetyFlags.CANFD_LKA_STEER_MSG_ALT | HyundaiSafetyFlags.CANFD_ANGLE_STEERING
 
   # Angle steering does not use torque — override inherited torque tests
   def test_steer_safety_check(self):
@@ -623,5 +619,56 @@ class TestHyundaiCanfdLFASteeringLongAltButtons(TestHyundaiCanfdLFASteeringLongB
   def test_acc_cancel(self):
     # Alt buttons does not use SCC_CONTROL to cancel if longitudinal
     pass
+
+
+CAMERA_SCC_COMBOS = [c for c in ALL_GAS_EV_HYBRID_COMBOS if c["EXTRA_SAFETY_PARAM"] & HyundaiSafetyFlags.CAMERA_SCC]
+
+
+@parameterized_class(CAMERA_SCC_COMBOS)
+class TestHyundaiCanfdLFASteeringCCNC(TestHyundaiCanfdLFASteeringBase):
+
+  TX_MSGS = [[0x12A, 0], [0x1E0, 0], [0x1CF, 2], [0x161, 0], [0x162, 0], [0xEA, 2]]
+  RELAY_MALFUNCTION_ADDRS = {0: (0x12A, 0x1E0, 0x161, 0x162), 2: (0xEA,)}
+  FWD_BLACKLISTED_ADDRS = {0: [0xEA], 2: [0x12A, 0x1E0, 0x161, 0x162]}
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    if cls.__name__ == "TestHyundaiCanfdLFASteeringCCNC":
+      cls.packer = None
+      raise unittest.SkipTest
+
+  def setUp(self):
+    libsafety_py.libsafety.set_current_safety_param_sp(HyundaiSafetyFlagsSP.CCNC)
+    super().setUp()
+
+  def tearDown(self):
+    self.safety.set_current_safety_param_sp(0)
+
+  def test_ccnc_tx_msgs(self):
+    for msg, bus in (("CCNC_0x161", 0), ("CCNC_0x162", 0), ("MDPS", 2)):
+      self.assertTrue(self._tx(self.packer.make_can_msg_safety(msg, bus, {})))
+
+
+@parameterized_class(CAMERA_SCC_COMBOS)
+class TestHyundaiCanfdLFASteeringCCNCLong(TestHyundaiCanfdLFASteeringLongBase, TestHyundaiCanfdLFASteeringCCNC):
+
+  TX_MSGS = [[0x12A, 0], [0x1E0, 0], [0x1CF, 2], [0x1A0, 0], [0x161, 0], [0x162, 0], [0xEA, 2]]
+  RELAY_MALFUNCTION_ADDRS = {0: (0x12A, 0x1E0, 0x1A0, 0x161, 0x162), 2: (0x1CF, 0xEA)}
+  FWD_BLACKLISTED_ADDRS = {0: [0x1CF, 0xEA], 2: [0x12A, 0x1E0, 0x1A0, 0x161, 0x162]}
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    if cls.__name__ == "TestHyundaiCanfdLFASteeringCCNCLong":
+      cls.packer = None
+      raise unittest.SkipTest
+
+  def test_button_sends(self):
+    for btn in range(8):
+      for main_btn in (0, 1):
+        self.assertTrue(self._tx(self._button_msg(btn, main_button=main_btn, bus=self.BUTTONS_TX_BUS)))
+
+
 if __name__ == "__main__":
   unittest.main()
